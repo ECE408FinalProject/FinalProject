@@ -992,5 +992,6 @@ ece408_intra_pred_result *ece408_competition(ece408_frame *imgs, int num_frames)
 	//Fill in your own!
 	(void)imgs;
 	(void)num_frames;
-	return NULL;
+
+    return ece408_intra_pred_result *competition(imgs, num_frames);
 }
