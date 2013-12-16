@@ -23,23 +23,26 @@ __constant__ float HERAMAND8[8][8] = {{1,1,1,1,1,1,1,1},
 									 }
  __device__
 void DCPrediction(ece408_frame *currentFrame, ece408_frame *predictionFrames) {
-	uint8_t dc_val_y = 0;
-	uint8_t dc_val_cb = 0;
-	uint8_t dc_val_cr = 0;
+	int dc_val_y = 0;
+	int dc_val_cb = 0;
+	int dc_val_cr = 0;
 	
 	//blockDim corresponds to chroma dimension
-	int col_c = blockIdx.x*blockDim.x+threadIdx.x;
+	int col_c = blockIdx.x*blockDim.x+threadIdx.x;//current column and row of chroma frame
 	int row_c = blockIdx.y*blockDim.y+threadIdx.y;
-	int col_l = col_c*2;
+	int col_l = col_c*2;//y offset because twice as large as chroma
 	int row_l = row_c*2;
-	int cell_c = row_c*currentFrame->width/2+col_c;
+	int cell_c = row_c*currentFrame->width/2+col_c;//current pixel in chroma frame
+	int prevrow_firstcell = (blockIdx.y*blockDim.y*2 - 1)*currentFrame->width + blockIdx.x*blockDim.x*2;//previous row but first column of current block
+	int prevcol_firstcell = blockIdx.y*blockDim.y*2*currentFrame->width + (blockIdx.x - 1)*blockDim.x*2 + blockDim.x*2 - 1;//previous column but first row of current block
 	
-	int cell_y0 = row_l*currentFrame->width+col_l;
+	int cell_y0 = row_l*currentFrame->width+col_l;//grabs 4 luma pixels per thread since luma block is 4 times the size as a chroma block
 	int cell_y1 = row_l*currentFrame->width+(col_l+1);
-	int cell_y2 = (row_l)*currentFrame->width+col_l;
-	int cell_y3 = (row_l)*currentFrame->width+(col_l+1);
+	int cell_y2 = (row_l+1)*currentFrame->width+col_l;
+	int cell_y3 = (row_l+1)*currentFrame->width+(col_l+1);
 
-	if(blockDim.x == gridDim.x-1 && gridDim.x % blockDim.x != 0)
+	//rightmost column, partial blocks
+	if(blockIdx.x == gridDim.x-1 && gridDim.x % blockDim.x != 0)
 	{
 		if(col_c < currentFrame->width/2 && row_c < currentFrame->height/2)
 		{
@@ -57,7 +60,8 @@ void DCPrediction(ece408_frame *currentFrame, ece408_frame *predictionFrames) {
 			predictionFrames[1].y[cell_y3] = currentFrame[1].y[cell_y3];
 		}
 	}
-	if(blockDim.y == gridDim.x-1 && gridDim.y % blockDim.y != 0)
+	//bottom row, partial blocks
+	if(blockIdx.y == gridDim.y-1 && gridDim.y % blockDim.y != 0)
 	{
 		if(row_c < currentFrame->height/2 && col_c < currentFrame->width/2)
 		{
@@ -84,7 +88,7 @@ void DCPrediction(ece408_frame *currentFrame, ece408_frame *predictionFrames) {
 			dc_val_cr = 128;
 		}
 	}
-	// if on first column
+	//first column blocks
 	else if(blockIdx.x - 1 < 0)
 	{
 		// add values to the left
@@ -109,6 +113,7 @@ void DCPrediction(ece408_frame *currentFrame, ece408_frame *predictionFrames) {
 		dc_val_cb /= (2*blockDim.y);
 		dc_val_cr /= (2*blockDim.y);
 	}
+	//top row blocks
 	else if(blockIdx.y - 1 < 0)
 	{
 		// add values above
@@ -132,6 +137,7 @@ void DCPrediction(ece408_frame *currentFrame, ece408_frame *predictionFrames) {
 		dc_val_cb /= (2*blockDim.x);
 		dc_val_cr /= (2*blockDim.x);
 	}
+	//middle full blocks
 	else
 	{
 		for(int i = 0; i < blockDim.x*2; i++)
@@ -155,17 +161,65 @@ void DCPrediction(ece408_frame *currentFrame, ece408_frame *predictionFrames) {
 		dc_val_cr /= (2*blockDim.x);
 	}
 	if(blockDim.x != 2){
-		predictionFrames[1].cb[cell_c] = dc_val_cb;
-		predictionFrames[1].cr[cell_c] = dc_val_cr;
+		predictionFrames[1].cb[cell_c] = (uint8_t)dc_val_cb;
+		predictionFrames[1].cr[cell_c] = (uint8_t)dc_val_cr;
 	}
 	else{
 		predictionFrames[1].cb[cell_c] = NULL;
 		predictionFrames[1].cr[cell_c] = NULL;
 	}
-	predictionFrames[1].y[cell_y0] = dc_val_y;
-	predictionFrames[1].y[cell_y1] = dc_val_y;
-	predictionFrames[1].y[cell_y2] = dc_val_y;
-	predictionFrames[1].y[cell_y3] = dc_val_y;
+	predictionFrames[1].y[cell_y0] = (uint8_t)dc_val_y;
+	predictionFrames[1].y[cell_y1] = (uint8_t)dc_val_y;
+	predictionFrames[1].y[cell_y2] = (uint8_t)dc_val_y;
+	predictionFrames[1].y[cell_y3] = (uint8_t)dc_val_y;
+	//stated in spec
+	if(blockDim.x*2 < 32){
+		//if not in first column or row
+		if(blockIdx.x > 0 && blockIdx.y > 0){
+			//if we are in last partial column or in last partial row do nothing
+			if((blockIdx.x == gridDim.x-1 && gridDim.x % blockDim.x != 0) || (blockIdx.y == gridDim.y-1 && gridDim.y % blockDim.y != 0)){}
+			else{
+				//replace top corner luma of block as stated in spec
+				predictionFrames[1].y[0] = (currentFrame->y[prevcol_firstcell] + 2*dc_val_y + currentFrame->y[prevrow_firstcell] + 2)>>2;
+				//replace top row and left column as stated in spec
+				for(int i = 1; i < blockDim.x*2; i++){
+					int prev_row_y = (blockIdx.y*blockDim.y*2 - 1)*currentFrame->width + blockIdx.x*blockDim.x*2 + i;
+					int curr_row_y = (blockIdx.y*blockDim.y*2)*curentFrame->width + blockIdx.x*blockDim.x*2 + i;
+					predictionFrames[1].y[curr_row_y] = (currentFrame[prev_row_y] + 3*(uint8_t)dc_val_y + 2)>>2;
+					int prev_col_y = (blockIdx.y*blockDim.y*2 + i)*currentFrame->width + (blockIdx.x - 1)*blockDim.x*2 + blockDim.x*2 - 1;
+					int curr_col_y = (blockIdx.y*blockDim.y*2 + i)*currentFrame->width + blockIdx.x*blockDim.x*2;
+					predictionFrames[1].y[curr_col_y] = (currentFrame[prev_col_y] + 3*(uint8_t)dc_val_y + 2)>>2;
+				}
+			}
+		}
+		//if in first block
+		else if(blockIdx.x == 0 && blockIdx.y == 0){
+			predictionFrames[1].y[0] = (128 + 2*dc_val_y + 128 + 2)>>2;
+			//replace first row and column of values
+			for(int i = 1; i < blockDim.x*2; i++){
+				predictionFrames[1].y[curr_row_y] = (128 + 3*(uint8_t)dc_val_y + 2)>>2;
+				predictionFrames[1].y[curr_col_y] = (128 + 3*(uint8_t)dc_val_y + 2)>>2;
+			}
+		}
+		//if in first column and not in last partial block of column
+		else if (blockIdx.x == 0 && !(blockIdx.y == gridDim.y-1 && gridDim.y % blockDim.y != 0)){
+			predictionFrames[1].y[0] = (128 + 2*dc_val_y + currentFrame->y[prevrow_firstcell] + 2)>>2;
+			for(int i = 1; i < blockDim.x*2; i++){
+				int prev_row_y = (blockIdx.y*blockDim.y*2 - 1)*currentFrame->width + blockIdx.x*blockDim.x*2 + i;
+				int curr_row_y = (blockIdx.y*blockDim.y*2)*curentFrame->width + blockIdx.x*blockDim.x*2 + i;
+				predictionFrames[1].y[curr_row_y] = (currentFrame[prev_row_y] + 3*(uint8_t)dc_val_y + 2)>>2;
+			}
+		}
+		//if in first row and not in last partial block of row
+		else if (blockIdx.y == 0 && !(blockIdx.x == gridDim.x-1 && gridDim.x % blockDim.x != 0)){
+			predictionFrames[1].y[0] = (currentFrame->y[prevcol_firstcell] + 2*dc_val_y + 128 + 2)>>2;
+			for(int i = 1; i < blockDim.x*2; i++){
+				int prev_col_y = (blockIdx.y*blockDim.y*2 + i)*currentFrame->width + (blockIdx.x - 1)*blockDim.x*2 + blockDim.x*2 - 1;
+				int curr_col_y = (blockIdx.y*blockDim.y*2 + i)*currentFrame->width + blockIdx.x*blockDim.x*2;
+				predictionFrames[1].y[curr_col_y] = (currentFrame[prev_col_y] + 3*(uint8_t)dc_val_y + 2)>>2;
+			}
+		}
+	}
 }
 
 
