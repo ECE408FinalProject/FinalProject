@@ -23,7 +23,149 @@ __constant__ float HERAMAND8[8][8] = {{1,1,1,1,1,1,1,1},
 									 }
  __device__
 void DCPrediction(ece408_frame *currentFrame, ece408_frame *predictionFrames) {
+	uint8_t dc_val_y = 0;
+	uint8_t dc_val_cb = 0;
+	uint8_t dc_val_cr = 0;
+	
+	//blockDim corresponds to chroma dimension
+	int col_c = blockIdx.x*blockDim.x+threadIdx.x;
+	int row_c = blockIdx.y*blockDim.y+threadIdx.y;
+	int col_l = col_c*2;
+	int row_l = row_c*2;
+	int cell_c = row_c*currentFrame->width/2+col_c;
+	
+	int cell_y0 = row_l*currentFrame->width+col_l;
+	int cell_y1 = row_l*currentFrame->width+(col_l+1);
+	int cell_y2 = (row_l)*currentFrame->width+col_l;
+	int cell_y3 = (row_l)*currentFrame->width+(col_l+1);
 
+	if(blockDim.x == gridDim.x-1 && gridDim.x % blockDim.x != 0)
+	{
+		if(col_c < currentFrame->width/2 && row_c < currentFrame->height/2)
+		{
+			if(blockDim.x != 2){
+				predictionFrames[1].cb[cell_c] = currentFrame[1].cb[cell_c];
+				predictionFrames[1].cr[cell_c] = currentFrame[1].cr[cell_c];
+			}
+			else{
+				predictionFrames[1].cb = NULL;
+				predictionFrames[1].cr = NULL;
+			}
+			predictionFrames[1].y[cell_y0] = currentFrame[1].y[cell_y0];
+			predictionFrames[1].y[cell_y1] = currentFrame[1].y[cell_y1];
+			predictionFrames[1].y[cell_y2] = currentFrame[1].y[cell_y2];
+			predictionFrames[1].y[cell_y3] = currentFrame[1].y[cell_y3];
+		}
+	}
+	if(blockDim.y == gridDim.x-1 && gridDim.y % blockDim.y != 0)
+	{
+		if(row_c < currentFrame->height/2 && col_c < currentFrame->width/2)
+		{
+			if(blockDim.x != 2){
+				predictionFrames[1].cb[cell_c] = currentFrame[1].[cell_c];
+				predictionFrames[1].cr[cell_c] = currentFrame[1].[cell_c];
+			}
+			else{
+				predictionFrames[1].cb = NULL;
+				predictionFrames[1].cr = NULL;
+			}
+			predictionFrames[1].y[cell_y0] = currentFrame[1].y[cell_y0];
+			predictionFrames[1].y[cell_y1] = currentFrame[1].y[cell_y1];
+			predictionFrames[1].y[cell_y2] = currentFrame[1].y[cell_y2];
+			predictionFrames[1].y[cell_y3] = currentFrame[1].y[cell_y3];
+		}
+	}
+	// if on first block (top left block, no values to base predicted on)
+	if(blockIdx.x - 1 < 0 && blockIdx.y - 1 < 0)
+	{
+		dc_val_y = 128;
+		if(blockDim.x != 2){
+			dc_val_cb = 128;
+			dc_val_cr = 128;
+		}
+	}
+	// if on first column
+	else if(blockIdx.x - 1 < 0)
+	{
+		// add values to the left
+		for(int i = 0; i < blockDim.y*2; i++)
+		{
+			if(threadIdx.x == 0 && threadIdx.y == 0){
+				//add all of left column and replace top row with first of left column
+				int prev_col_y = (blockIdx.y*blockDim.y*2 + i)*currentFrame->width + (blockIdx.x - 1)*blockDim.x*2 + blockDim.x*2 - 1;
+				int first_col_y = (blockIdx.y*blockDim.y*2)*currentFrame->width + (blockIdx.x - 1)*blockDim.x*2 + blockDim.x*2 - 1;
+				int prev_col_c = (blockIdx.y*blockDim.y + i/2)*currentFrame->width/2 + (blockIdx.x - 1)*blockDim.x + blockDim.x - 1;
+				int first_col_c = (blockIdx.y*blockDim.y)*currentFrame->width/2 + (block.x - 1)*blockDim.x + blockDim.x - 1;
+
+				dc_val_y += currentFrame->y[prev_col_y] + currentFrame->y[first_col_y];
+				if(blockDim.x != 2){
+					dc_val_cb += currentFrame->cb[prev_col_c] + currentFrame->cb[first_col_c];
+					dc_val_cr += currentFrame->cr[prev_col_c] + currentFrame->cr[first_col_c];			
+				}
+			}
+		}
+		//average the dc values
+		dc_val_y /= (4*blockDim.y);
+		dc_val_cb /= (2*blockDim.y);
+		dc_val_cr /= (2*blockDim.y);
+	}
+	else if(blockIdx.y - 1 < 0)
+	{
+		// add values above
+		for(int i = 0; i < blockDim.x*2; i++)
+		{
+			if(threadIdx.x == 0 && threadIdx.y == 0){
+				int prev_row_y = (blockIdx.y*blockDim.y*2 - 1)*currentFrame->width + blockIdx.x*blockDim.x*2 + i;
+				int first_row_y = (blockIdx.y*blockDim.y*2 - 1)*currentFrame->width + blockIdx.x*blockDim.x*2;
+				int prev_row_c = (blockIdx.y*blockDim.y - 1)*currentFrame->width/2 + blockIdx.x*blockDim.x + i/2;
+				int first_row_c = (blockIdx.y*blockDim.y - 1)*currentFrame->width/2 + blockIdx.x*blockDim.x;
+
+				dc_val_y += currentFrame->y[prev_row_y] + currentFrame->y[prev_row_y];
+				if(blockDim.x != 2){
+					dc_val_cb += currentFrame->cb[prev_row_c] + currentFrame->cb[first_row_c];
+					dc_val_cr += currentFrame->cr[prev_row_c] + currentFrame->cr[first_row_c];
+				}
+			}
+		}
+		//average results
+		dc_val_y /=(4*blockDim.x);
+		dc_val_cb /= (2*blockDim.x);
+		dc_val_cr /= (2*blockDim.x);
+	}
+	else
+	{
+		for(int i = 0; i < blockDim.x*2; i++)
+		{
+			if(threadIdx.x == 0 && threadIdx.y = 0){
+				int prev_row_y = (blockIdx.y*blockDim.y*2 - 1)*currentFrame->width + blockIdx.x*blockDim.x*2 + i;
+				int prev_col_y = (blockIdx.y*blockDim.y*2 + i)*currentFrame->width + (blockIdx.x - 1)*blockDim.x*2 + blockDim.x*2 - 1;
+				int prev_row_c = (blockIdx.y*blockDim.y - 1)*currentFrame->width/2 + blockIdx.x*blockDim.x + i/2;
+				int prev_col_c = (blockIdx.y*blockDim.y + i/2)*currentFrame->width/2 + (blockIdx.x - 1)*blockDim.x + blockDim.x - 1;
+
+				dc_val_y += currentFrame->y[prev_col_y] + currentFrame->y[prev_row_y];
+				if(blockDim.x != 2){
+					dc_val_cb += currentFrame->cb[prev_col_c] + currentFrame->cb[prev_row_c];
+					dc_val_cr += currentFrame->cr[prev_col_c] + currentFrame->cr[prev_row_c];
+				}
+			}
+		}
+		//average results
+		dc_val_y /= (4*blockDim.x);
+		dc_val_cb /= (2*blockDim.x);
+		dc_val_cr /= (2*blockDim.x);
+	}
+	if(blockDim.x != 2){
+		predictionFrames[1].cb[cell_c] = dc_val_cb;
+		predictionFrames[1].cr[cell_c] = dc_val_cr;
+	}
+	else{
+		predictionFrames[1].cb[cell_c] = NULL;
+		predictionFrames[1].cr[cell_c] = NULL;
+	}
+	predictionFrames[1].y[cell_y0] = dc_val_y;
+	predictionFrames[1].y[cell_y1] = dc_val_y;
+	predictionFrames[1].y[cell_y2] = dc_val_y;
+	predictionFrames[1].y[cell_y3] = dc_val_y;
 }
 
 
