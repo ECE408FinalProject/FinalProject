@@ -616,10 +616,16 @@ void AngularPredictionInitialize(ece408_frame *currentFrame, ece408_frame *predi
     int invAngle       = invAngTable[absAng];
     absAng             = angTable[absAng];
     intraPredAngle     = signAng * absAng;
+
+    dim3 
+
+    AngularPredictionLuma<<<>>>(currentFrame, predictionFrames, iMode, block_size, intraPredAngle, modeHor, modeVer);
+    AngularPredictionCB<<<>>>(currentFrame, predictionFrames, iMode, block_size, intraPredAngle, modeHor, modeVer);;
+    AngularPredictionCR<<<>>>(currentFrame, predictionFrames, iMode, block_size, intraPredAngle, modeHor, modeVer);
 }
 
 __global__
-void AngularPredictionLuma(ece408_frame *currentFrame, ece408_frame *predictionFrames, int iMode, int block_size) {
+void AngularPredictionLuma(ece408_frame *currentFrame, ece408_frame *predictionFrames, int iMode, int block_size, int intraPredAngle, bool modeHor, bool modeVer) {
 
 	extern __shared__ uint8_t *refAbove[];
 	extern __shared__ uint8_t *refLeft[];
@@ -766,10 +772,371 @@ void AngularPredictionLuma(ece408_frame *currentFrame, ece408_frame *predictionF
 	__syncthreads();
 
 	if (intraPredAngle == 0) {
-
+		predictionFrames[iMode].y[col + row * width] = refMain[threadIdx.x + 1];
 	}
 	else {
+		int deltaPos = (threadIdx.y + 1) * intraPredAngle;
+		int deltaInt = deltaPos >> 5;
+		int deltaFract = deltaPos & 31;
 		
+		if (deltaFract) {
+			refMainIndex = threadIdx.x + deltaInt + 1;
+			predictionFrames[iMode].y[col + row * width] = ((32 - deltaFract) * refMain[refMainIndex] + deltaFract * refMain[refMainIndex + 1] + 16) >> 5;
+		}
+		else {
+			predictionFrames[iMode].y[col + row * width] = refMain[threadIdx.x + deltaInt + 1];
+		}
+	}
+
+	if (modeHor) {
+		uint8_t tmp;
+		tmp = predictionFrame[iMode].y[col + row * width];
+		__syncthreads();
+		predictionFrame[iMode].y[(blockIdx.x * blockDim.x + threadIdx.y) + (blockIdx.y * blockDim.y + threadIdx.x) * width] = tmp;
+	}
+}
+
+__global__
+void AngularPredictionCB(ece408_frame *currentFrame, ece408_frame *predictionFrames, int iMode, int block_size, int intraPredAngle, bool modeHor, bool modeVer) {
+
+	extern __shared__ uint8_t *refAbove[];
+	extern __shared__ uint8_t *refLeft[];
+
+	int row = threadIdx.y + blockIdx.y * blockDim.y;
+	int col = threadIdx.x + blockIdx.x * blockDim.x;
+
+	int width = currentFrame->width;
+	int height = currentFrame->height;
+
+	uint8_t *refMain;
+	uint8_t *refSide;
+
+	if (threadIdx.y == 0) {
+		if (blockIdx.x == 0 && blockIdx.y == 0) {
+			refAbove[threadIdx.x + block_size] = 128;
+			refAbove[threadIdx.x + block_size*2] = 128;
+			if (threadIdx.x == 0) {
+				refAbove[-1 + block_size] = 128;
+			}
+		}
+		else if (blockIdx.y == 0) {
+			refAbove[threadIdx.x + block_size] = currentFrame->cb[blockIdx.x * blockDim.x - 1 + width * row];
+			refAbove[threadIdx.x + block_size*2] = currentFrame->cb[blockIdx.x * blockDim.x - 1 + width * row];
+			if (threadIdx.x == 0) {
+				refAbove[-1 + block_size] = currentFrame->cb[blockIdx.x * blockDim.x - 1 + width * row];
+			}
+		}
+		else if (blockIdx.x == 0) {
+			refAbove[threadIdx.x + block_size] = currentFrame->[col + width * (row - 1)];
+			refAbove[threadIdx.x + block_size*2] = currentFrame->cb[col + block_size + width * (row - 1)];
+			if (threadIdx.x == 0) {
+				refAbove[-1 + block_size] = currentFrame->cb[col + width * (row - 1)];
+			}
+		}
+		else if (blockIdx.y == gridDim.y - 1 && blockIdx.x == gridDim.x - 1) {
+			if (width % block_size == 0 && height % block_size == 0) {
+				refAbove[threadIdx.x + block_size] = currentFrame->cb[col + width * (row - 1)];
+				refAbove[threadIdx.x + block_size*2] = currentFrame->cb[width - 1 + width * row];
+				if (threadIdx.x == 0) {
+					refAbove[-1 + block_size] = currentFrame->cb[col - 1 + width * (row - 1)];
+				}
+			}
+		}
+		else if (blockIdx.y == gridDim.y - 1) {
+			if (height % block_size == 0) {
+				refAbove[threadIdx.x + block_size] = currentFrame->cb[col + width * (row - 1)];
+				refAbove[threadIdx.x + block_size*2] = currentFrame->cb[col + block_size + width * (row - 1)];
+				if (threadIdx.x == 0) {
+					refAbove[-1 + block_size] = currentFrame->cb[col - 1 + width * (row - 1)];
+				}
+			}
+		}
+		else if (blockIdx.x == gridDim.x - 1 ) {
+			if (width % block_size == 0) {
+				refAbove[threadIdx.x + block_size] = currentFrame->cb[col + width * (row - 1)];
+				refAbove[threadIdx.x + block_size*2] = currentFrame->cb[width - 1 + width * (row - 1)];
+				if (threadIdx.x == 0) {
+					refAbove[-1 + block_size] = currentFrame->cb[col - 1 + width * (row - 1)];
+				}
+			}
+		}
+		else {
+			refAbove[threadIdx.x + block_size] = currentFrame->cb[col + width * (row - 1)];
+			refAbove[threadIdx.x + block_size*2] = currentFrame->cb[col + block_size + width * (row - 1)];
+			if (threadIdx.x == 0) {
+				refAbove[-1 + block_size] = currentFrame->cb[col - 1 + width * (row - 1)];
+			}
+		}
+	}
+
+	if (threadIdx.x == 0) {
+		if (blockIdx.x == 0 && blockIdx.y == 0) {
+			refLeft[threadIdx.y + block_size] = 128;
+			refLeft[threadidx.y + block_size*2] = 128;
+			if (threadIdx.y == 0) {
+				refLeft[-1 + block_size] = 128;
+			}
+		}
+		else if (blockIdx.y == 0) {
+			refLeft[threadIdx.y + block_size] = currentFrame->cb[col - 1 + width * row];
+			refLeft[threadidx.y + block_size*2] = currentFrame->cb[col - 1 + width * (row + block_size)];
+			if (threadIdx.y == 0) {
+				refLeft[-1 + block_size] = currentFrame->cb[col - 1 + width * row];
+			}
+		}
+		else if (blockIdx.x == 0) {
+			refLeft[threadIdx.y + block_size] = currentFrame->cb[col + width * (blockIdx.y * blockDim.y - 1)];
+			refLeft[threadidx.y + block_size*2] = currentFrame->cb[col + width * (blockIdx.y * blockDim.y - 1)];
+			if (threadIdx.y == 0) {
+				refLeft[-1 + block_size] = currentFrame->cb[col + width * (blockIdx.y * blockDim.y - 1)];
+			}
+		}
+		else if (blockIdx.x == gridDim.x - 1 && blockIdx.y == gridDim.y - 1) {
+			if (width % block_size == 0 && height % block_size == 0) {
+				refLeft[threadIdx.y + block_size] = currentFrame->cb[col - 1 + width * row];
+				refLeft[threadIdx.y + block_size*2] = currentFrame->cb[col + width * (height - block_size - 1)];
+				if (threadIdx.y == 0) {
+					refLeft[-1 + block_size] = currentFrame->cb[col - 1 + width * (row - 1)];
+				}
+			}
+		}
+		else if (blockIdx.y == gridDim.y - 1) {
+			if (height % block_size == 0) {
+				refLeft[threadIdx.y + block_size] = currentFrame->cb[col - 1 + width * row];
+				refLeft[threadIdx.y + block_size*2] = currentFrame->cb[col - 1 + width * (height - 1)];
+				if (threadIdx.y == 0) {
+					refLeft[-1 + block_size] = currentFrame->cb[col - 1 + width * (row - 1)];
+				}
+			}
+		}
+		else if (blockIdx.x == gridDim.x - 1) {
+			if (width & block_size == 0) {
+				refLeft[threadIdx.y + block_size] = currentFrame->cb[col - 1 + width * row];
+				refLeft[threadIdx.y + block_size*2] = currentFrame->cb[col - 1 + width * (row + block_size)];
+				if (threadIdx.y == 0) {
+					refLeft[-1 + block_size] = currentFrame->cb[col - 1 + width * (row - 1)];
+				}
+			}
+		}
+		else {
+			refLeft[threadIdx.y + block_size] = currentFrame->cb[col - 1 + width * row];
+			refLeft[threadIdx.y + block_size*2] = currentFrame->cb[col - 1 + width * (row + block_size)];
+			if (threadIdx.y == 0) {
+				refLeft[-1 + block_size] = currentFrame->cb[col - 1 + width * (row -1)];
+			}
+		}
+	}
+
+	__syncthreads();
+
+	refMain = modeVer ? &(refAbove[block_size]) : &(refLeft[block_size]);
+	refSide = modeVer ? &(refLeft[block_size]) : &(refMain[block_size]);
+
+	if (threadIdx.x == 0) {
+		if (intraPredAngle < 0) {
+			int invAngleSum = 128;
+			for (int k = -1; k > blkSize * intraPredAngle >> 5; k--) {
+				invAngleSum += invAngle;
+				refMain[k] = refSide[invAngleSum >> 8];
+			}
+		}
+	}
+	__syncthreads();
+
+	if (intraPredAngle == 0) {
+		predictionFrames[iMode].cb[col + row * width] = refMain[threadIdx.x + 1];
+	}
+	else {
+		int deltaPos = (threadIdx.y + 1) * intraPredAngle;
+		int deltaInt = deltaPos >> 5;
+		int deltaFract = deltaPos & 31;
+		
+		if (deltaFract) {
+			refMainIndex = threadIdx.x + deltaInt + 1;
+			predictionFrames[iMode].cb[col + row * width] = ((32 - deltaFract) * refMain[refMainIndex] + deltaFract * refMain[refMainIndex + 1] + 16) >> 5;
+		}
+		else {
+			predictionFrames[iMode].cb[col + row * width] = refMain[threadIdx.x + deltaInt + 1];
+		}
+	}
+
+	if (modeHor) {
+		uint8_t tmp;
+		tmp = predictionFrame[iMode].cb[col + row * width];
+		__syncthreads();
+		predictionFrame[iMode].cb[(blockIdx.x * blockDim.x + threadIdx.y) + (blockIdx.y * blockDim.y + threadIdx.x) * width] = tmp;
+	}
+}
+
+__global__
+void AngularPredictionCR(ece408_frame *currentFrame, ece408_frame *predictionFrames, int iMode, int block_size, int intraPredAngle, bool modeHor, bool modeVer) {
+
+	extern __shared__ uint8_t *refAbove[];
+	extern __shared__ uint8_t *refLeft[];
+
+	int row = threadIdx.y + blockIdx.y * blockDim.y;
+	int col = threadIdx.x + blockIdx.x * blockDim.x;
+
+	int width = currentFrame->width;
+	int height = currentFrame->height;
+
+	uint8_t *refMain;
+	uint8_t *refSide;
+
+	if (threadIdx.y == 0) {
+		if (blockIdx.x == 0 && blockIdx.y == 0) {
+			refAbove[threadIdx.x + block_size] = 128;
+			refAbove[threadIdx.x + block_size*2] = 128;
+			if (threadIdx.x == 0) {
+				refAbove[-1 + block_size] = 128;
+			}
+		}
+		else if (blockIdx.y == 0) {
+			refAbove[threadIdx.x + block_size] = currentFrame->cr[blockIdx.x * blockDim.x - 1 + width * row];
+			refAbove[threadIdx.x + block_size*2] = currentFrame->cr[blockIdx.x * blockDim.x - 1 + width * row];
+			if (threadIdx.x == 0) {
+				refAbove[-1 + block_size] = currentFrame->cr[blockIdx.x * blockDim.x - 1 + width * row];
+			}
+		}
+		else if (blockIdx.x == 0) {
+			refAbove[threadIdx.x + block_size] = currentFrame->[col + width * (row - 1)];
+			refAbove[threadIdx.x + block_size*2] = currentFrame->cr[col + block_size + width * (row - 1)];
+			if (threadIdx.x == 0) {
+				refAbove[-1 + block_size] = currentFrame->cr[col + width * (row - 1)];
+			}
+		}
+		else if (blockIdx.y == gridDim.y - 1 && blockIdx.x == gridDim.x - 1) {
+			if (width % block_size == 0 && height % block_size == 0) {
+				refAbove[threadIdx.x + block_size] = currentFrame->cr[col + width * (row - 1)];
+				refAbove[threadIdx.x + block_size*2] = currentFrame->cr[width - 1 + width * row];
+				if (threadIdx.x == 0) {
+					refAbove[-1 + block_size] = currentFrame->cr[col - 1 + width * (row - 1)];
+				}
+			}
+		}
+		else if (blockIdx.y == gridDim.y - 1) {
+			if (height % block_size == 0) {
+				refAbove[threadIdx.x + block_size] = currentFrame->cr[col + width * (row - 1)];
+				refAbove[threadIdx.x + block_size*2] = currentFrame->cr[col + block_size + width * (row - 1)];
+				if (threadIdx.x == 0) {
+					refAbove[-1 + block_size] = currentFrame->cr[col - 1 + width * (row - 1)];
+				}
+			}
+		}
+		else if (blockIdx.x == gridDim.x - 1 ) {
+			if (width % block_size == 0) {
+				refAbove[threadIdx.x + block_size] = currentFrame->cr[col + width * (row - 1)];
+				refAbove[threadIdx.x + block_size*2] = currentFrame->cr[width - 1 + width * (row - 1)];
+				if (threadIdx.x == 0) {
+					refAbove[-1 + block_size] = currentFrame->cr[col - 1 + width * (row - 1)];
+				}
+			}
+		}
+		else {
+			refAbove[threadIdx.x + block_size] = currentFrame->cr[col + width * (row - 1)];
+			refAbove[threadIdx.x + block_size*2] = currentFrame->cr[col + block_size + width * (row - 1)];
+			if (threadIdx.x == 0) {
+				refAbove[-1 + block_size] = currentFrame->cr[col - 1 + width * (row - 1)];
+			}
+		}
+	}
+
+	if (threadIdx.x == 0) {
+		if (blockIdx.x == 0 && blockIdx.y == 0) {
+			refLeft[threadIdx.y + block_size] = 128;
+			refLeft[threadidx.y + block_size*2] = 128;
+			if (threadIdx.y == 0) {
+				refLeft[-1 + block_size] = 128;
+			}
+		}
+		else if (blockIdx.y == 0) {
+			refLeft[threadIdx.y + block_size] = currentFrame->cr[col - 1 + width * row];
+			refLeft[threadidx.y + block_size*2] = currentFrame->cr[col - 1 + width * (row + block_size)];
+			if (threadIdx.y == 0) {
+				refLeft[-1 + block_size] = currentFrame->cr[col - 1 + width * row];
+			}
+		}
+		else if (blockIdx.x == 0) {
+			refLeft[threadIdx.y + block_size] = currentFrame->cr[col + width * (blockIdx.y * blockDim.y - 1)];
+			refLeft[threadidx.y + block_size*2] = currentFrame->cr[col + width * (blockIdx.y * blockDim.y - 1)];
+			if (threadIdx.y == 0) {
+				refLeft[-1 + block_size] = currentFrame->cr[col + width * (blockIdx.y * blockDim.y - 1)];
+			}
+		}
+		else if (blockIdx.x == gridDim.x - 1 && blockIdx.y == gridDim.y - 1) {
+			if (width % block_size == 0 && height % block_size == 0) {
+				refLeft[threadIdx.y + block_size] = currentFrame->cr[col - 1 + width * row];
+				refLeft[threadIdx.y + block_size*2] = currentFrame->cr[col + width * (height - block_size - 1)];
+				if (threadIdx.y == 0) {
+					refLeft[-1 + block_size] = currentFrame->cr[col - 1 + width * (row - 1)];
+				}
+			}
+		}
+		else if (blockIdx.y == gridDim.y - 1) {
+			if (height % block_size == 0) {
+				refLeft[threadIdx.y + block_size] = currentFrame->cr[col - 1 + width * row];
+				refLeft[threadIdx.y + block_size*2] = currentFrame->cr[col - 1 + width * (height - 1)];
+				if (threadIdx.y == 0) {
+					refLeft[-1 + block_size] = currentFrame->cr[col - 1 + width * (row - 1)];
+				}
+			}
+		}
+		else if (blockIdx.x == gridDim.x - 1) {
+			if (width & block_size == 0) {
+				refLeft[threadIdx.y + block_size] = currentFrame->cr[col - 1 + width * row];
+				refLeft[threadIdx.y + block_size*2] = currentFrame->cr[col - 1 + width * (row + block_size)];
+				if (threadIdx.y == 0) {
+					refLeft[-1 + block_size] = currentFrame->cr[col - 1 + width * (row - 1)];
+				}
+			}
+		}
+		else {
+			refLeft[threadIdx.y + block_size] = currentFrame->cr[col - 1 + width * row];
+			refLeft[threadIdx.y + block_size*2] = currentFrame->cr[col - 1 + width * (row + block_size)];
+			if (threadIdx.y == 0) {
+				refLeft[-1 + block_size] = currentFrame->cr[col - 1 + width * (row -1)];
+			}
+		}
+	}
+
+	__syncthreads();
+
+	refMain = modeVer ? &(refAbove[block_size]) : &(refLeft[block_size]);
+	refSide = modeVer ? &(refLeft[block_size]) : &(refMain[block_size]);
+
+	if (threadIdx.x == 0) {
+		if (intraPredAngle < 0) {
+			int invAngleSum = 128;
+			for (int k = -1; k > blkSize * intraPredAngle >> 5; k--) {
+				invAngleSum += invAngle;
+				refMain[k] = refSide[invAngleSum >> 8];
+			}
+		}
+	}
+	__syncthreads();
+
+	if (intraPredAngle == 0) {
+		predictionFrames[iMode].cr[col + row * width] = refMain[threadIdx.x + 1];
+	}
+	else {
+		int deltaPos = (threadIdx.y + 1) * intraPredAngle;
+		int deltaInt = deltaPos >> 5;
+		int deltaFract = deltaPos & 31;
+		
+		if (deltaFract) {
+			refMainIndex = threadIdx.x + deltaInt + 1;
+			predictionFrames[iMode].cr[col + row * width] = ((32 - deltaFract) * refMain[refMainIndex] + deltaFract * refMain[refMainIndex + 1] + 16) >> 5;
+		}
+		else {
+			predictionFrames[iMode].cr[col + row * width] = refMain[threadIdx.x + deltaInt + 1];
+		}
+	}
+
+	if (modeHor) {
+		uint8_t tmp;
+		tmp = predictionFrame[iMode].cr[col + row * width];
+		__syncthreads();
+		predictionFrame[iMode].cr[(blockIdx.x * blockDim.x + threadIdx.y) + (blockIdx.y * blockDim.y + threadIdx.x) * width] = tmp;
 	}
 }
 
