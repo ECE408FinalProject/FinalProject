@@ -383,7 +383,7 @@ void SATD(ece408_frame *currentFrame, ece408_frame *predictionFrames, ece408_res
 			if(blockDim.x != 2){
 				SATD_Cb(currentFrame, predictionFrames, result);
 			}
-			else[
+			else{
 				result->cb_satd_results = null;
 				result->cb_modes = null;
 			}
@@ -391,7 +391,7 @@ void SATD(ece408_frame *currentFrame, ece408_frame *predictionFrames, ece408_res
 	}
 }
 __device__ 
-void PlanarCb((ece408_frame *currentFrame, ece408_frame *predictionFrames) {
+void PlanarCb(ece408_frame *currentFrame, ece408_frame *predictionFrames) {
 	int nTbS = blockDim.x;
 	int col = blockDim.x*blockIdx.x + threadIdx.x; //col
 	int row = blockDim.y*blockIdx.y + threadIdx.y; //row
@@ -402,18 +402,20 @@ void PlanarCb((ece408_frame *currentFrame, ece408_frame *predictionFrames) {
 	uint8_t top_x;
 	uint8_t left_y;
 	//skip partial blocks
-	if(blockDim.x == gridDim.x-1){
+	if(blockIdx.x == gridDim.x-1){
 		if(width%nTbS != 0)
 			if(row<height && col < width)
 				predictionFrame->cb[row*width+col] = currentFrame->cr[row*width+col];
 		
 	}
-	if(blockDim.y == gridDim.y-1{
-		if(height%nTbS != 0)
-			if(row<height**col<width)
+	if(blockIdx.y == gridDim.y-1){
+		if(height%nTbS != 0){
+			if(row<height**col<width){
 			predictionFrame->cb[row*width+col] = currentFrame->cr[row*width+col];
+			}
+		}	
 	}
-	if(blockDim.x == 0 && blockDim.y == 0){
+	if(blockIdx.x == 0 && blockIdx.y == 0){
 		if(blockDim.x != 4){
 			top_b = ((1 << 7) + 2 * (1 << 7) + (1 << 7) + 2 ) >> 2;
 			left_b = ((1 << 7) + 2 * (1 << 7) + (1 << 7) + 2 ) >> 2;
@@ -427,7 +429,7 @@ void PlanarCb((ece408_frame *currentFrame, ece408_frame *predictionFrames) {
 			left_y = (1 << 7);
 		}
 	}
-	else if(blockDim.x == 0){
+	else if(blockIdx.x == 0){
 		left_b = currentFrame->cb[((blockDim.y*blockIdx.y)-1)*width];
 		left_y = currentFrame->cb[((blockDim.y*blockIdx.y)-1)*width];
 		top_x = currentFrame->cb[((blockDim.y*blockIdx.y)-1)*width + col];
@@ -440,7 +442,7 @@ void PlanarCb((ece408_frame *currentFrame, ece408_frame *predictionFrames) {
 			
 		}
 	}
-	else if(blockDim.y == 0){
+	else if(blockIdx.y == 0){
 		uint8_t top_pixels = currentFrame->cb[(blockDim.y*blockIdx.y)*width + (blockDim.x*blockIdx.x-1)];
 		top_b = top_pixels;
 		top_x = top_pixels;
@@ -456,8 +458,7 @@ void PlanarCb((ece408_frame *currentFrame, ece408_frame *predictionFrames) {
 			top_b = top_pixels;
 			top_x = top_pixels;
 			left_y = (currentFrame->cb[((row-1)*width)+(blockDim.x*blockIdx.x-1)] + 2*left_y + currentFrame->cb[(row+1*width)+(blockDim.x*blockIdx.x-1)]) >> 2;
-			left_b = (currentFrame->cb[((nTbS-1)*width)+(blockDim.x*blockIdx.x-1)] + 2*left_b + currentFrame->cb[((nTbS+1)*width)+(blockDim.x*blockIdx.x-1)]) >> 2;
-			
+			left_b = (currentFrame->cb[((nTbS-1)*width)+(blockDim.x*blockIdx.x-1)] + 2*left_b + currentFrame->cb[((nTbS+1)*width)+(blockDim.x*blockIdx.x-1)]) >> 2;	
 		}	
 	}
 	else{
@@ -513,18 +514,18 @@ void PlanarCr((ece408_frame *currentFrame, ece408_frame *predictionFrames) {
 	uint8_t left_y;
 	
 	//skip partial blocks
-	if(blockDim.x == gridDim.x-1){
+	if(blockIdx.x == gridDim.x-1){
 		if(width%nTbS != 0)
 			if(row<height && col < width)
 				predictionFrame->cr[row*width+col] = currentFrame->cr[row*width+col];
 		
 	}
-	if(blockDim.y == gridDim.y-1{
+	if(blockIdx.y == gridDim.y-1{
 		if(height%nTbS != 0)
 			if(row<height**col<width)
 			predictionFrame->cr[row*width+col] = currentFrame->cr[row*width+col];
 	}
-	if(blockDim.x == 0 && blockDim.y == 0){
+	if(blockIdx.x == 0 && blockIdx.y == 0){
 		if(blockDim.x != 4){
 			top_b = ((1 << 7) + 2 * (1 << 7) + (1 << 7) + 2 ) >> 2;
 			left_b = ((1 << 7) + 2 * (1 << 7) + (1 << 7) + 2 ) >> 2;
@@ -538,7 +539,7 @@ void PlanarCr((ece408_frame *currentFrame, ece408_frame *predictionFrames) {
 			left_y = (1 << 7);
 		}
 	}
-	else if(blockDim.x == 0){
+	else if(blockIdx.x == 0){
 		left_b = currentFrame->cr[((blockDim.y*blockIdx.y)-1)*width];
 		left_y = currentFrame->cr[((blockDim.y*blockIdx.y)-1)*width];
 		top_x = currentFrame->cr[((blockDim.y*blockIdx.y)-1)*width + col];
@@ -551,7 +552,7 @@ void PlanarCr((ece408_frame *currentFrame, ece408_frame *predictionFrames) {
 			
 		}
 	}
-	else if(blockDim.y == 0){
+	else if(blockIdx.y == 0){
 		uint8_t top_pixels = currentFrame->cr[(blockDim.y*blockIdx.y)*width + (blockDim.x*blockIdx.x-1)];
 		top_b = top_pixels;
 		top_x = top_pixels;
@@ -623,7 +624,7 @@ void PlanarLuma(ece408_frame *currentFrame, ece408_frame *predictionFrames) {
 	uint8_t left_y;
 	uint8_t left_y2;
 	//skip partial blocks
-	if(blockDim.x == gridDim.x-1){
+	if(blockIdx.x == gridDim.x-1){
 		if(width%nTbS != 0)
 			if(2*row<height && 2*col < width)
 				predictionFrame->cr[2*row*width+2*col] = currentFrame->cr[2*row*width+2*col];
@@ -635,7 +636,7 @@ void PlanarLuma(ece408_frame *currentFrame, ece408_frame *predictionFrames) {
 				predictionFrame->cr[(2*row+1)*width+2*col] = currentFrame->cr[(2*row+1)*width+2*col+1];
 		
 	}
-	if(blockDim.y == gridDim.y-1{
+	if(blockIdx.y == gridDim.y-1{
 		if(height%nTbS != 0)
 			if(2*row<height && 2*col < width)
 				predictionFrame->cr[2*row*width+2*col] = currentFrame->cr[2*row*width+2*col];
@@ -647,7 +648,7 @@ void PlanarLuma(ece408_frame *currentFrame, ece408_frame *predictionFrames) {
 				predictionFrame->cr[(2*row+1)*width+2*col] = currentFrame->cr[(2*row+1)*width+2*col+1];
 	}
 	//top left corner
-	if(blockDim.x == 0 && blockDim.y == 0){
+	if(blockIdx.x == 0 && blockIdx.y == 0){
 		//all reference pixels will be the same
 		if(blockDim.x != 2){
 			//luma block size not 4
@@ -697,7 +698,7 @@ void PlanarLuma(ece408_frame *currentFrame, ece408_frame *predictionFrames) {
 	
 	}
 	//top side
-	else if(blockDim.y == 0){
+	else if(blockIdx.y == 0){
 		
 		uint8_t top_pixels = currentFrame->y[(2*blockDim.y*blockIdx.y)*width + (2*blockDim.x*blockIdx.x-1)];
 		top_b = top_pixels;
