@@ -825,8 +825,19 @@ void PlanarPrediction(ece408_frame *currentFrame, ece408_frame *predictionFrames
 }
 
 __host__
-void AngularPredictionInitialize(ece408_frame *currentFrame, ece408_frame *predictionFrames, int iMode, int block_size) {
+void AngularPredictionInitialize(ece408_frame *currentFrame_h, ece408_frame *predictionFrames_d, int iMode, int block_size) {
+
+	// Use array to determine whether to filter reference arrays
+	unsigned char IntraFilterType[][35] =
+	{
+    /*  4x4  */ { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    /*  8x8  */ { 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 },
+    /* 16x16 */ { 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1 },
+    /* 32x32 */ { 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1 },
+    /* 64x64 */ { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+	};
 	
+	// Set up prediction angle data (same as reference code)
 	bool modeHor = (dirMode < 18);
 	bool modeVer = !modeHor;
 	int intraPredAngle = modeVer ? iMode - VER_IDX : modeHor ? -(iMode - HOR_IDX) : 0;
@@ -839,18 +850,45 @@ void AngularPredictionInitialize(ece408_frame *currentFrame, ece408_frame *predi
     absAng             = angTable[absAng];
     intraPredAngle     = signAng * absAng;
 
-    dim3 
+    dim3 lumaDimGrid((currentFrame_h->width + block_size - 1)/block_size, (currentFrame_h->height + block_size - 1)/block_size, 1);
+    dim3 lumaDimBlock(block_size, block_size, 1);
 
-    AngularPredictionLuma<<<>>>(currentFrame, predictionFrames, iMode, block_size, intraPredAngle, modeHor, modeVer);
-    AngularPredictionCB<<<>>>(currentFrame, predictionFrames, iMode, block_size, intraPredAngle, modeHor, modeVer);;
-    AngularPredictionCR<<<>>>(currentFrame, predictionFrames, iMode, block_size, intraPredAngle, modeHor, modeVer);
+    dim3 chromaDimGrid((currentFrame_h->width/2 + block_size/2 - 1)/(block_size/2), (currentFrame_h->height/2 + block_size/2 - 1)/(block_size/2), 1);
+    dim3 chromaDimBlock(block_size/2, block_size/2, 1);
+
+    // Copy the frame to memory
+    ece408_frame *currentFrame_d;
+	int frameSize = sizeof(ece408_frame);
+	cudaMalloc((void**)&currentFrame_d, frameSize);
+
+	error = cudaMemcpy(currentFrame_d, currentFrame_h, frameSize, cudaMemcpyHostToDevice);
+	if (error != cudaSuccess) FATAL("Unable to copy memory");
+
+	// Call Luma channel kernel
+    AngularPredictionLuma<<<lumaDimGrid, lumaDimBlock, 2 * (sizeof(uint8_t) * block_size * 3)>>>
+    	(currentFrame_d, predictionFrames_d, iMode, block_size, intraPredAngle, modeHor, modeVer, (bool)IntraFilterType[block_size][iMode]);
+    error = cudaDeviceSynchronize();
+	if (error != cudaSuccess) FATAL("Unable to launch/execute kernel");
+
+	// Call ChromaB channel kernel
+    AngularPredictionCB<<<chromaDimGrid, chromaDimBlock, 2 * (sizeof(uint8_t) * block_size * 3>>>
+    	(currentFrame_d, predictionFrames_d, iMode, block_size, intraPredAngle, modeHor, modeVer, (bool)IntraFilterType[block_size][iMode]);
+   	error = cudaDeviceSynchronize();
+	if (error != cudaSuccess) FATAL("Unable to launch/execute kernel");
+
+	// Call ChromaR channel kernel
+    AngularPredictionCR<<<chromaDimGrid, chromaDimBlock, 2 * (sizeof(uint8_t) * block_size * 3>>>
+    	(currentFrame_d, predictionFrames_d, iMode, block_size, intraPredAngle, modeHor, modeVer, (bool)IntraFilterType[block_size][iMode]);
+    error = cudaDeviceSynchronize();
+	if (error != cudaSuccess) FATAL("Unable to launch/execute kernel");
 }
 
 __global__
-void AngularPredictionLuma(ece408_frame *currentFrame, ece408_frame *predictionFrames, int iMode, int block_size, int intraPredAngle, bool modeHor, bool modeVer) {
+void AngularPredictionLuma(ece408_frame *currentFrame, ece408_frame *predictionFrames, int iMode, int block_size, int intraPredAngle, bool modeHor, bool modeVer, bool filterFlag) {
 
-	extern __shared__ uint8_t *refAbove[];
-	extern __shared__ uint8_t *refLeft[];
+	extern __shared__ uint8_t *shared[];
+	uint8_t *refAbove = shared;
+	uint8_t *refLeft = &refAbove[block_size * 3];
 
 	int row = threadIdx.y + blockIdx.y * blockDim.y;
 	int col = threadIdx.x + blockIdx.x * blockDim.x;
@@ -861,6 +899,7 @@ void AngularPredictionLuma(ece408_frame *currentFrame, ece408_frame *predictionF
 	uint8_t *refMain;
 	uint8_t *refSide;
 
+	// Initialize top reference array
 	if (threadIdx.y == 0) {
 		if (blockIdx.x == 0 && blockIdx.y == 0) {
 			refAbove[threadIdx.x + block_size] = 128;
@@ -919,6 +958,7 @@ void AngularPredictionLuma(ece408_frame *currentFrame, ece408_frame *predictionF
 		}
 	}
 
+	// Initialize left reference array
 	if (threadIdx.x == 0) {
 		if (blockIdx.x == 0 && blockIdx.y == 0) {
 			refLeft[threadIdx.y + block_size] = 128;
@@ -979,6 +1019,25 @@ void AngularPredictionLuma(ece408_frame *currentFrame, ece408_frame *predictionF
 
 	__syncthreads();
 
+	// Filter if required
+	if (filterFlag) {
+		if (threadIdx.y == 0) {
+			refAbove[threadIdx.x + block_size] = (refAbove[threadIdx.x - 1 + block_size] + refAbove[threadIdx.x + block_size] * 2 + refAbove[threadIdx.x + 1 + block_size]) >> 2;
+			if (threadIdx.x != block_size - 1) {
+				refAbove[threadIdx.x * 2 + block_size] = (refAbove[threadIdx.x * 2 - 1 + block_size] + refAbove[threadIdx.x * 2 + block_size] * 2 + refAbove[threadIdx * 2 + 1 + block_size]) >> 2;
+			}
+		}
+		if (threadIdx.x == 0) {
+			refAbove[threadIdx.y + block_size] = (refAbove[threadIdx.y - 1 + block_size] + refAbove[threadIdx.y + block_size] * 2 + refAbove[threadIdx.y + 1 + block_size]) >> 2;
+			if (threadIdx.y != block_size - 1) {
+				refAbove[threadIdx.y * 2 + block_size] = (refAbove[threadIdx.y * 2 - 1 + block_size] + refAbove[threadIdx.y * 2 + block_size] * 2 + refAbove[threadIdx.y * 2 + 1 + block_size]) >> 2;
+			}
+		}
+	}
+
+	__syncthreads();
+
+	// Set main and side reference arrays
 	refMain = modeVer ? &(refAbove[block_size]) : &(refLeft[block_size]);
 	refSide = modeVer ? &(refLeft[block_size]) : &(refMain[block_size]);
 
@@ -993,6 +1052,7 @@ void AngularPredictionLuma(ece408_frame *currentFrame, ece408_frame *predictionF
 	}
 	__syncthreads();
 
+	// Populate the prediction frames with data from the reference arrays
 	if (intraPredAngle == 0) {
 		predictionFrames[iMode].y[col + row * width] = refMain[threadIdx.x + 1];
 	}
@@ -1010,6 +1070,7 @@ void AngularPredictionLuma(ece408_frame *currentFrame, ece408_frame *predictionF
 		}
 	}
 
+	// Flip if horizontal mode
 	if (modeHor) {
 		uint8_t tmp;
 		tmp = predictionFrame[iMode].y[col + row * width];
@@ -1019,10 +1080,11 @@ void AngularPredictionLuma(ece408_frame *currentFrame, ece408_frame *predictionF
 }
 
 __global__
-void AngularPredictionCB(ece408_frame *currentFrame, ece408_frame *predictionFrames, int iMode, int block_size, int intraPredAngle, bool modeHor, bool modeVer) {
+void AngularPredictionCB(ece408_frame *currentFrame, ece408_frame *predictionFrames, int iMode, int block_size, int intraPredAngle, bool modeHor, bool modeVer, bool filterFlag) {
 
-	extern __shared__ uint8_t *refAbove[];
-	extern __shared__ uint8_t *refLeft[];
+	extern __shared__ uint8_t *shared[];
+	uint8_t *refAbove = shared;
+	uint8_t *refLeft = &refAbove[block_size * 3];
 
 	int row = threadIdx.y + blockIdx.y * blockDim.y;
 	int col = threadIdx.x + blockIdx.x * blockDim.x;
@@ -1033,6 +1095,7 @@ void AngularPredictionCB(ece408_frame *currentFrame, ece408_frame *predictionFra
 	uint8_t *refMain;
 	uint8_t *refSide;
 
+	// Initialize top reference array
 	if (threadIdx.y == 0) {
 		if (blockIdx.x == 0 && blockIdx.y == 0) {
 			refAbove[threadIdx.x + block_size] = 128;
@@ -1091,6 +1154,7 @@ void AngularPredictionCB(ece408_frame *currentFrame, ece408_frame *predictionFra
 		}
 	}
 
+	// Initialize left refence array
 	if (threadIdx.x == 0) {
 		if (blockIdx.x == 0 && blockIdx.y == 0) {
 			refLeft[threadIdx.y + block_size] = 128;
@@ -1151,6 +1215,25 @@ void AngularPredictionCB(ece408_frame *currentFrame, ece408_frame *predictionFra
 
 	__syncthreads();
 
+	// Filter if required
+	if (filterFlag) {
+		if (threadIdx.y == 0) {
+			refAbove[threadIdx.x + block_size] = (refAbove[threadIdx.x - 1 + block_size] + refAbove[threadIdx.x + block_size] * 2 + refAbove[threadIdx.x + 1 + block_size]) >> 2;
+			if (threadIdx.x != block_size - 1) {
+				refAbove[threadIdx.x * 2 + block_size] = (refAbove[threadIdx.x * 2 - 1 + block_size] + refAbove[threadIdx.x * 2 + block_size] * 2 + refAbove[threadIdx * 2 + 1 + block_size]) >> 2;
+			}
+		}
+		if (threadIdx.x == 0) {
+			refAbove[threadIdx.y + block_size] = (refAbove[threadIdx.y - 1 + block_size] + refAbove[threadIdx.y + block_size] * 2 + refAbove[threadIdx.y + 1 + block_size]) >> 2;
+			if (threadIdx.y != block_size - 1) {
+				refAbove[threadIdx.y * 2 + block_size] = (refAbove[threadIdx.y * 2 - 1 + block_size] + refAbove[threadIdx.y * 2 + block_size] * 2 + refAbove[threadIdx.y * 2 + 1 + block_size]) >> 2;
+			}
+		}
+	}
+
+	__syncthreads();
+
+	// Set Main and side reference arrays
 	refMain = modeVer ? &(refAbove[block_size]) : &(refLeft[block_size]);
 	refSide = modeVer ? &(refLeft[block_size]) : &(refMain[block_size]);
 
@@ -1165,6 +1248,7 @@ void AngularPredictionCB(ece408_frame *currentFrame, ece408_frame *predictionFra
 	}
 	__syncthreads();
 
+	// Populate the prediction frames with data from the reference arrays
 	if (intraPredAngle == 0) {
 		predictionFrames[iMode].cb[col + row * width] = refMain[threadIdx.x + 1];
 	}
@@ -1182,6 +1266,7 @@ void AngularPredictionCB(ece408_frame *currentFrame, ece408_frame *predictionFra
 		}
 	}
 
+	// Flip if horizontal mode
 	if (modeHor) {
 		uint8_t tmp;
 		tmp = predictionFrame[iMode].cb[col + row * width];
@@ -1191,10 +1276,11 @@ void AngularPredictionCB(ece408_frame *currentFrame, ece408_frame *predictionFra
 }
 
 __global__
-void AngularPredictionCR(ece408_frame *currentFrame, ece408_frame *predictionFrames, int iMode, int block_size, int intraPredAngle, bool modeHor, bool modeVer) {
+void AngularPredictionCR(ece408_frame *currentFrame, ece408_frame *predictionFrames, int iMode, int block_size, int intraPredAngle, bool modeHor, bool modeVer, bool filterFlag) {
 
-	extern __shared__ uint8_t *refAbove[];
-	extern __shared__ uint8_t *refLeft[];
+	extern __shared__ uint8_t *shared[];
+	uint8_t *refAbove = shared;
+	uint8_t *refLeft = &refAbove[block_size * 3];
 
 	int row = threadIdx.y + blockIdx.y * blockDim.y;
 	int col = threadIdx.x + blockIdx.x * blockDim.x;
@@ -1205,6 +1291,7 @@ void AngularPredictionCR(ece408_frame *currentFrame, ece408_frame *predictionFra
 	uint8_t *refMain;
 	uint8_t *refSide;
 
+	// Initialize top reference array
 	if (threadIdx.y == 0) {
 		if (blockIdx.x == 0 && blockIdx.y == 0) {
 			refAbove[threadIdx.x + block_size] = 128;
@@ -1263,6 +1350,7 @@ void AngularPredictionCR(ece408_frame *currentFrame, ece408_frame *predictionFra
 		}
 	}
 
+	// Initialize left refence array
 	if (threadIdx.x == 0) {
 		if (blockIdx.x == 0 && blockIdx.y == 0) {
 			refLeft[threadIdx.y + block_size] = 128;
@@ -1323,6 +1411,25 @@ void AngularPredictionCR(ece408_frame *currentFrame, ece408_frame *predictionFra
 
 	__syncthreads();
 
+	// Filter if required
+	if (filterFlag) {
+		if (threadIdx.y == 0) {
+			refAbove[threadIdx.x + block_size] = (refAbove[threadIdx.x - 1 + block_size] + refAbove[threadIdx.x + block_size] * 2 + refAbove[threadIdx.x + 1 + block_size]) >> 2;
+			if (threadIdx.x != block_size - 1) {
+				refAbove[threadIdx.x * 2 + block_size] = (refAbove[threadIdx.x * 2 - 1 + block_size] + refAbove[threadIdx.x * 2 + block_size] * 2 + refAbove[threadIdx * 2 + 1 + block_size]) >> 2;
+			}
+		}
+		if (threadIdx.x == 0) {
+			refAbove[threadIdx.y + block_size] = (refAbove[threadIdx.y - 1 + block_size] + refAbove[threadIdx.y + block_size] * 2 + refAbove[threadIdx.y + 1 + block_size]) >> 2;
+			if (threadIdx.y != block_size - 1) {
+				refAbove[threadIdx.y * 2 + block_size] = (refAbove[threadIdx.y * 2 - 1 + block_size] + refAbove[threadIdx.y * 2 + block_size] * 2 + refAbove[threadIdx.y * 2 + 1 + block_size]) >> 2;
+			}
+		}
+	}
+
+	__syncthreads();
+
+	// Set Main and side reference arrays
 	refMain = modeVer ? &(refAbove[block_size]) : &(refLeft[block_size]);
 	refSide = modeVer ? &(refLeft[block_size]) : &(refMain[block_size]);
 
@@ -1335,8 +1442,10 @@ void AngularPredictionCR(ece408_frame *currentFrame, ece408_frame *predictionFra
 			}
 		}
 	}
+
 	__syncthreads();
 
+	// Populate the prediction frames with data from the reference arrays
 	if (intraPredAngle == 0) {
 		predictionFrames[iMode].cr[col + row * width] = refMain[threadIdx.x + 1];
 	}
@@ -1354,6 +1463,7 @@ void AngularPredictionCR(ece408_frame *currentFrame, ece408_frame *predictionFra
 		}
 	}
 
+	// Flip if horizontal mode
 	if (modeHor) {
 		uint8_t tmp;
 		tmp = predictionFrame[iMode].cr[col + row * width];
@@ -1361,6 +1471,7 @@ void AngularPredictionCR(ece408_frame *currentFrame, ece408_frame *predictionFra
 		predictionFrame[iMode].cr[(blockIdx.x * blockDim.x + threadIdx.y) + (blockIdx.y * blockDim.y + threadIdx.x) * width] = tmp;
 	}
 }
+
 
 /**
  * Main Intra Frame Prediction Function
@@ -1422,7 +1533,7 @@ ece408_intra_pred_result *competition(ece408_frame *imgs, int num_frames) {
 		//need to do this once for n = 2 n = 4 n = 8 n = 16
 		for(int n = 2; n < 17; n *= 2, j++){
 			dim3 predictionDimGrid((n-1)/(currentFrame_h.width/2)+1, (n-1)/(currentFrame_h.height/2)+1, NUM_MODES);
-			dim3 predictionDimBlock(n, n, NUM_CHANNELS);
+			dim3 predictionDimBlock(n, n, 2); // 2 for Planar and DC, angular done separately
 			
 			
 			//this is different. 
@@ -1447,7 +1558,12 @@ ece408_intra_pred_result *competition(ece408_frame *imgs, int num_frames) {
 			intra_frame_prediction<<<predictionDimGrid, predictionDimBlock>>>(currentFrame, predictionFrames);
 			error = cudaDeviceSynchronize();
 			if (error != cudaSuccess) FATAL("Unable to launch/execute kernel");
-
+			
+			// Angular is done separately
+			for (int i = 2; i < 35; i++) {
+				AngularPredictionInitialize(currentFrame_h, predictionFrames, i, n);
+			}
+			
 			// Call kernel to perform SATD on each block within the frame
 			SATD(currentFrame, predictionFrames, &results[j]);
 			// Copy result into the results array
