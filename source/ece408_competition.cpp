@@ -36,6 +36,7 @@
 #include "x265.h"
 #include "getopt.h"
 #include "PPA/ppa.h"
+#include "kernel.cu"
 
 #include "encoder.h"
 #include "TLibCommon/TComYuv.h"
