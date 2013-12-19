@@ -309,7 +309,7 @@ int SA8D(int diffr[][], int row, int col){
 	return result;
 }
 __device__
-void SATD_Cr(ece408_frame *currentFrame, ece408_frame *predictionFrames, ece408_result * result){
+void SATD_Cr(ece408_frame *currentFrame, ece408_frame *predictionFrames, ece408_intra_pred_result * result){
 	//compute unsorted SATD values
 	__shared__ int diffr[blockDim.x][blockDim.y];
 	__shared__ int sum = 0;
@@ -335,7 +335,7 @@ void SATD_Cr(ece408_frame *currentFrame, ece408_frame *predictionFrames, ece408_
 	}
 }
 __device__
-void SATD_Cb(ece408_frame *currentFrame, ece408_frame *predictionFrames, ece408_result * result){
+void SATD_Cb(ece408_frame *currentFrame, ece408_frame *predictionFrames, ece408_intra_pred_result * result){
 	//compute unsorted SATD values
 	__shared__ int diffr[blockDim.x][blockDim.y];
 	
@@ -356,12 +356,12 @@ void SATD_Cb(ece408_frame *currentFrame, ece408_frame *predictionFrames, ece408_
 		//TODO atomic add the SATD values into result->cb_satd_result[i]
 		atomicAdd(&sum, abs(val));
 		__syncthreads();
-		if(threadIdx.x ==0 && threadIdx.y == 0)
+		if(threadIdx.x == 0 && threadIdx.y == 0)
 			result->cb_satd_result[i] = (uint32_t) sum;
 	}
 }
 __global__
-void SATD(ece408_frame *currentFrame, ece408_frame *predictionFrames, ece408_result * result){
+void SATD(ece408_frame *currentFrame, ece408_frame *predictionFrames, ece408_intra_pred_result * result){
 	switch (blockIdx.z) {
 		//blockDim.x == 2 implies luma size = 4 chroma size = N/A
 		//TODO still need to be sorted
@@ -374,8 +374,8 @@ void SATD(ece408_frame *currentFrame, ece408_frame *predictionFrames, ece408_res
 				SATD_Cr(currentFrame, predictionFrames, result);
 			}
 			else{
-				result->cr_satd_results = null;
-				result->cr_modes = null;
+				result->cr_satd_results = NULL;
+				result->cr_modes = NULL;
 			}
 			break;
 
@@ -384,10 +384,35 @@ void SATD(ece408_frame *currentFrame, ece408_frame *predictionFrames, ece408_res
 				SATD_Cb(currentFrame, predictionFrames, result);
 			}
 			else{
-				result->cb_satd_results = null;
-				result->cb_modes = null;
+				result->cb_satd_results = NULL;
+				result->cb_modes = NULL;
 			}
 			break;
+	}
+	//reorder the SATD mode indicies so that the best results appear first in the corresponding modes array
+	uint8_t *tempy_mode = NULL;
+	uint8_t *tempcb_mode = NULL;
+	uint8_t *tempcr_mode = NULL;
+	if(threadIdx.x == 0 && threadIdx.y == 0){
+		int num_unsorted = 35;
+		for(int i = 1; i < num_unsorted; i++){
+			if(result->y_modes[i-1] > result->y_modes[i] && result->y_modes != NULL){
+				tempy_mode = result->y_modes[i-1];
+				result->y_modes[i-1] = result->y_modes[i];
+				result->y_modes[i] = tempy_mode;
+			}
+			if(result->cb_modes[i-1] > result->cb_modes[i] && result->cb_modes != NULL){
+				tempcb_mode = result->cb_modes[i-1];
+				result->cb_modes[i-1] = result->cb_modes[i];
+				result->cb_modes[i] = tempcb_mode;
+			}
+			if(result->cr_modes[i-1] > result->cr_modes[i] && result->cr_modes != NULL){
+				tempcr_mode = result->cr_modes[i-1];
+				result->cr_modes[i-1] = result->cr_modes[i];
+				result->cr_modes[i] = tempcr_mode;
+			}
+			num_unsorted--;
+		}
 	}
 }
 __device__ 
@@ -793,7 +818,7 @@ void PlanarPrediction(ece408_frame *currentFrame, ece408_frame *predictionFrames
 	if(dimBlock.x != 2)
 	{
 		PlanarCr(currentFrame, predictionFrames);
-		PlanarCb(currentFrame, predicitionFrames);
+		PlanarCb(currentFrame, predictionFrames);
 		
 	}
 	PlanarLuma(currentFrame, predictionFrames);
@@ -1424,7 +1449,7 @@ ece408_intra_pred_result *competition(ece408_frame *imgs, int num_frames) {
 			if (error != cudaSuccess) FATAL("Unable to launch/execute kernel");
 
 			// Call kernel to perform SATD on each block within the frame
-			SATD(currentFrame, predictionFrames, &result[j]);
+			SATD(currentFrame, predictionFrames, &results[j]);
 			// Copy result into the results array
 		}
 	}
